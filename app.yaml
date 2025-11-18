@@ -1,16 +1,10 @@
 runtime: python312
 
-instance_class: F1
-
 entrypoint: gunicorn -b :$PORT main:app
 
-automatic_scaling:
-  target_cpu_utilization: 0.65
+automatic_scaling:    # Standard supports automatic_scaling
   min_instances: 0
-  max_instances: 5
-  min_pending_latency: 100ms
-  max_pending_latency: automatic
-  max_concurrent_requests: 5
+  max_instances: 2
 
 env_variables:
   PYTHON_VERSION: "3.12"
