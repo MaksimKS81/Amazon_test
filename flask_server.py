@@ -62,31 +62,14 @@ except ImportError:
 # Initialize Flask app with explicit template folder
 app = Flask(__name__, template_folder='templates')
 
-# Configuration
+# Configuration - Use /tmp for all uploaded files (session-based storage)
 IS_PRODUCTION = os.getenv('GAE_ENV', '').startswith('standard')
-USE_CLOUD_STORAGE = IS_PRODUCTION and GCS_AVAILABLE
-
-# Upload configuration
-UPLOAD_FOLDER = 'uploads' if not USE_CLOUD_STORAGE else '/tmp'
-GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME', 'movement-analysis-uploads')
+UPLOAD_FOLDER = '/tmp'  # Works on both local and Google Cloud
 ALLOWED_EXTENSIONS = {'csv', 'txt'}
 MAX_FILE_SIZE = 16 * 1024 * 1024  # 16MB max file size
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
-app.config['GCS_BUCKET_NAME'] = GCS_BUCKET_NAME
-
-# Initialize GCS client if available
-gcs_client = None
-gcs_bucket = None
-if USE_CLOUD_STORAGE:
-    try:
-        gcs_client = storage.Client()
-        gcs_bucket = gcs_client.bucket(GCS_BUCKET_NAME)
-        logger.info(f"✓ Connected to GCS bucket: {GCS_BUCKET_NAME}")
-    except Exception as e:
-        logger.error(f"✗ Failed to connect to GCS: {e}")
-        USE_CLOUD_STORAGE = False
 
 # Custom template filter for date formatting
 @app.template_filter('timestamp_to_date')
@@ -95,17 +78,11 @@ def timestamp_to_date(timestamp):
     return datetime.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
 app.secret_key = 'movement_analysis_upload_key_2024'  # For flash messages
 
-# Ensure directories exist (only for local development)
-if not USE_CLOUD_STORAGE:
-    for folder in ['templates', 'uploads']:
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-            logger.info(f"Created {folder} directory")
-else:
-    # Ensure templates directory exists even in production
-    if not os.path.exists('templates'):
-        os.makedirs('templates')
-        logger.info("Created templates directory")
+# Ensure directories exist
+for folder in ['templates', '/tmp']:
+    if not os.path.exists(folder):
+        os.makedirs(folder, exist_ok=True)
+        logger.info(f"Created {folder} directory")
 
 # File upload helper functions
 def allowed_file(filename):
@@ -113,62 +90,27 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def upload_to_gcs(file, filename):
-    """Upload file to Google Cloud Storage"""
-    try:
-        blob = gcs_bucket.blob(filename)
-        blob.upload_from_file(file, rewind=True)
-        logger.info(f"✓ Uploaded {filename} to GCS")
-        return True
-    except Exception as e:
-        logger.error(f"✗ Failed to upload to GCS: {e}")
-        return False
-
-def download_from_gcs(filename, destination_path):
-    """Download file from Google Cloud Storage"""
-    try:
-        blob = gcs_bucket.blob(filename)
-        blob.download_to_filename(destination_path)
-        logger.info(f"✓ Downloaded {filename} from GCS")
-        return True
-    except Exception as e:
-        logger.error(f"✗ Failed to download from GCS: {e}")
-        return False
-
 def get_file_path(filename):
-    """Get file path - either local or download from GCS to temp"""
-    if USE_CLOUD_STORAGE:
-        temp_path = os.path.join('/tmp', filename)
-        if download_from_gcs(filename, temp_path):
-            return temp_path
-        return None
-    else:
-        return os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    """Get full file path in /tmp directory"""
+    return os.path.join(app.config['UPLOAD_FOLDER'], filename)
 
 def save_uploaded_file(file, filename):
-    """Save uploaded file - either locally or to GCS"""
-    if USE_CLOUD_STORAGE:
-        return upload_to_gcs(file, filename)
-    else:
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    """Save uploaded file to /tmp directory"""
+    try:
+        filepath = get_file_path(filename)
         file.save(filepath)
-        logger.info(f"✓ Saved {filename} locally")
+        logger.info(f"✓ Saved {filename} to {filepath}")
         return True
+    except Exception as e:
+        logger.error(f"✗ Failed to save {filename}: {e}")
+        return False
 
 def list_uploaded_files():
-    """List all uploaded files"""
-    if USE_CLOUD_STORAGE:
-        try:
-            blobs = gcs_bucket.list_blobs()
-            return [blob.name for blob in blobs if allowed_file(blob.name)]
-        except Exception as e:
-            logger.error(f"✗ Failed to list GCS files: {e}")
-            return []
-    else:
-        uploads_dir = app.config['UPLOAD_FOLDER']
-        if os.path.exists(uploads_dir):
-            return [f for f in os.listdir(uploads_dir) if allowed_file(f)]
-        return []
+    """List all uploaded files in /tmp directory"""
+    uploads_dir = app.config['UPLOAD_FOLDER']
+    if os.path.exists(uploads_dir):
+        return [f for f in os.listdir(uploads_dir) if allowed_file(f)]
+    return []
 
 def validate_csv_structure(filepath):
     """Validate that uploaded CSV has expected structure for movement data"""
@@ -535,8 +477,14 @@ def api_upload():
         name, ext = os.path.splitext(filename)
         filename = f"{name}_{timestamp}{ext}"
         
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
+        # Save file using appropriate storage method
+        if not save_uploaded_file(file, filename):
+            return jsonify({'error': 'Failed to save file'}), 500
+        
+        # Get file path for validation
+        filepath = get_file_path(filename)
+        if not filepath:
+            return jsonify({'error': 'Failed to retrieve file'}), 500
         
         # Validate structure
         is_valid, message = validate_csv_structure(filepath)
@@ -558,20 +506,22 @@ def api_upload():
 @app.route('/uploaded-files')
 def uploaded_files():
     """View uploaded files and analyze them"""
-    uploads_dir = os.path.join(os.getcwd(), 'uploads')
-    if not os.path.exists(uploads_dir):
-        return render_template('upload.html', error="No uploads directory found")
-    
     files = []
-    for filename in os.listdir(uploads_dir):
+    filenames = list_uploaded_files()
+    
+    for filename in filenames:
         if filename.endswith('.csv'):
-            filepath = os.path.join(uploads_dir, filename)
-            file_info = {
-                'name': filename,
-                'size': os.path.getsize(filepath),
-                'modified': os.path.getmtime(filepath)
-            }
-            files.append(file_info)
+            filepath = get_file_path(filename)
+            if filepath and os.path.exists(filepath):
+                file_info = {
+                    'name': filename,
+                    'size': os.path.getsize(filepath),
+                    'modified': os.path.getmtime(filepath)
+                }
+                files.append(file_info)
+    
+    if not files:
+        return render_template('upload.html', error="No uploaded files found")
     
     return render_template('uploaded_files.html', files=files)
 
@@ -579,10 +529,11 @@ def uploaded_files():
 def analyze_uploaded_file(filename):
     """Analyze a specific uploaded file"""
     try:
-        uploads_dir = os.path.join(os.getcwd(), 'uploads')
-        filepath = os.path.join(uploads_dir, filename)
+        # Get file path using storage helper
+        filepath = get_file_path(filename)
         
-        if not os.path.exists(filepath):
+        if not filepath or not os.path.exists(filepath):
+            logger.error(f"File not found: {filename}")
             return jsonify({'error': 'File not found'}), 404
             
         if not PROCESSING_AVAILABLE:
@@ -737,10 +688,11 @@ def download_report(filename):
         from io import BytesIO
         import datetime
         
-        uploads_dir = os.path.join(os.getcwd(), 'uploads')
-        filepath = os.path.join(uploads_dir, filename)
+        # Get file path using storage helper
+        filepath = get_file_path(filename)
         
-        if not os.path.exists(filepath):
+        if not filepath or not os.path.exists(filepath):
+            logger.error(f"File not found for report: {filename}")
             return jsonify({'error': 'File not found'}), 404
             
         if not PROCESSING_AVAILABLE:
@@ -1094,8 +1046,8 @@ if __name__ == '__main__':
     logger.info("Starting Flask server...")
     logger.info(f"Current directory: {os.getcwd()}")
     logger.info(f"Template directory: {os.path.join(os.getcwd(), 'templates')}")
+    logger.info(f"Upload directory: {app.config['UPLOAD_FOLDER']}")
     logger.info(f"Production mode: {IS_PRODUCTION}")
-    logger.info(f"Using Cloud Storage: {USE_CLOUD_STORAGE}")
     
     # Check if templates exist
     if os.path.exists('templates'):
