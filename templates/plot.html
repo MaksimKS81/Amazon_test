@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Plot - Movement Analysis</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .navigation {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+        .btn.secondary {
+            background-color: #6c757d;
+        }
+        .btn.secondary:hover {
+            background-color: #545b62;
+        }
+        #plot-div {
+            width: 100%;
+            height: 600px;
+            margin: 20px 0;
+        }
+        .plot-info {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .plot-info h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📈 Interactive Movement Analysis Plot</h1>
+        
+        <div class="navigation">
+            <a href="/" class="btn secondary">← Back to Dashboard</a>
+            <button class="btn" onclick="refreshPlot()">Refresh Data</button>
+            <button class="btn" onclick="downloadPlot()">Download Plot</button>
+        </div>
+
+        <div class="plot-info">
+            <h3>📊 Plot Information</h3>
+            <p>This interactive plot displays time series data for movement analysis. You can:</p>
+            <ul>
+                <li><strong>Zoom:</strong> Click and drag to zoom into specific time periods</li>
+                <li><strong>Pan:</strong> Hold Shift and drag to pan across the data</li>
+                <li><strong>Hover:</strong> Hover over data points to see detailed information</li>
+                <li><strong>Reset:</strong> Double-click to reset zoom to original view</li>
+            </ul>
+        </div>
+
+        <div id="plot-div"></div>
+
+        <div class="plot-info">
+            <h3>🔧 Plot Controls</h3>
+            <p>Use the toolbar in the top-right corner of the plot for additional options:</p>
+            <ul>
+                <li><strong>Pan:</strong> Move around the plot</li>
+                <li><strong>Box Zoom:</strong> Select area to zoom</li>
+                <li><strong>Lasso Select:</strong> Select data points</li>
+                <li><strong>Zoom In/Out:</strong> Zoom controls</li>
+                <li><strong>Auto Scale:</strong> Fit data to view</li>
+                <li><strong>Download:</strong> Save plot as image</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Parse the graph JSON and render the plot
+        var graphs = {{ graphJSON | safe }};
+        Plotly.newPlot('plot-div', graphs.data, graphs.layout, {responsive: true});
+
+        function refreshPlot() {
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.graph) {
+                        // Full Plotly mode
+                        const graph = JSON.parse(data.graph);
+                        Plotly.react('plot-div', graph.data, graph.layout, {responsive: true});
+                    } else if (data.dates && data.values) {
+                        // Simple mode - create basic plot
+                        const trace = {
+                            x: data.dates,
+                            y: data.values,
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            name: 'Sample Data'
+                        };
+                        const layout = {
+                            title: 'Sample Data (Simple Mode)',
+                            xaxis: {title: 'Date'},
+                            yaxis: {title: 'Value'}
+                        };
+                        Plotly.react('plot-div', [trace], layout, {responsive: true});
+                    } else {
+                        console.error('Unexpected data format:', data);
+                        alert('Unexpected data format received');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error refreshing plot:', error);
+                    alert('Error refreshing plot: ' + error.message);
+                });
+        }
+
+        function downloadPlot() {
+            Plotly.downloadImage('plot-div', {
+                format: 'png',
+                width: 1200,
+                height: 600,
+                filename: 'movement_analysis_plot'
+            });
+        }
+
+        // Add responsiveness
+        window.addEventListener('resize', function() {
+            Plotly.Plots.resize('plot-div');
+        });
+    </script>
+</body>
+</html>

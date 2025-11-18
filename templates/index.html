@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Movement Analysis Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        .card h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+        #plot-container {
+            width: 100%;
+            height: 500px;
+            margin-top: 20px;
+        }
+        .navigation {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .status.loading {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+        .status.success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏭 Industrial Movement Analysis Dashboard</h1>
+        
+        <div class="navigation">
+                            <button onclick="loadSampleData()" class="action-btn">
+                    📈 Load Sample Data
+                </button>
+                <a href="/upload" class="action-btn" style="background: linear-gradient(135deg, #e74c3c, #c0392b); text-decoration: none; color: white;">
+                    📤 Upload Your Data
+                </a>
+            <button class="btn" onclick="window.location.href='/plot'">View Interactive Plot</button>
+            <button class="btn" onclick="loadMovementAnalysis()">Movement Analysis</button>
+            <button class="btn" onclick="window.location.href='/uploaded-files'" style="background: #17a2b8;">📁 View Uploaded Files</button>
+        </div>
+
+        <div id="status" class="status" style="display: none;"></div>
+
+        <div class="dashboard">
+            <div class="card">
+                <h3>📊 Data Visualization</h3>
+                <p>Interactive plots and charts for movement analysis data.</p>
+                <ul>
+                    <li>Time series movement data</li>
+                    <li>Joint angle trajectories</li>
+                    <li>Velocity profiles</li>
+                    <li>Coordination patterns</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h3>🤖 Movement Classification</h3>
+                <p>AI-powered movement type detection and analysis.</p>
+                <ul>
+                    <li>REACH, PUSH, PULL, LIFT, CARRY detection</li>
+                    <li>Temporal segmentation analysis</li>
+                    <li>Dual-hand coordination assessment</li>
+                    <li>Warehouse operation patterns</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h3>⏱️ Temporal Analysis</h3>
+                <p>Frame-level precision movement timing analysis.</p>
+                <ul>
+                    <li>Start/stop frame detection</li>
+                    <li>Movement duration measurements</li>
+                    <li>Coordination efficiency metrics</li>
+                    <li>Sequential pattern analysis</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h3>🏗️ Ergonomic Assessment</h3>
+                <p>Workplace safety and efficiency recommendations.</p>
+                <ul>
+                    <li>Shelf height optimization</li>
+                    <li>Risk factor identification</li>
+                    <li>Task design recommendations</li>
+                    <li>Productivity metrics</li>
+                </ul>
+            </div>
+        </div>
+
+        <div id="plot-container"></div>
+
+        <div class="card">
+            <h3>📋 System Features</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div>
+                    <h4>Analysis Capabilities:</h4>
+                    <ul>
+                        <li>3D motion capture data processing</li>
+                        <li>Adaptive decision tree classification</li>
+                        <li>Multi-scale movement detection</li>
+                        <li>Bilateral hand coordination analysis</li>
+                        <li>Industrial workflow optimization</li>
+                    </ul>
+                </div>
+                <div>
+                    <h4>Supported Operations:</h4>
+                    <ul>
+                        <li>Amazon warehouse pick-and-pack</li>
+                        <li>Assembly line operations</li>
+                        <li>Material handling tasks</li>
+                        <li>Quality inspection workflows</li>
+                        <li>Ergonomic risk assessment</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            
+            if (type === 'loading') {
+                // Auto-hide loading status after 10 seconds
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                }, 10000);
+            }
+        }
+
+        function loadSampleData() {
+            showStatus('Loading sample data...', 'loading');
+            
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    const graphDiv = document.getElementById('plot-container');
+                    
+                    if (data.graph) {
+                        // Full Plotly mode
+                        const graph = JSON.parse(data.graph);
+                        Plotly.newPlot(graphDiv, graph.data, graph.layout, {responsive: true});
+                        showStatus('Sample data loaded successfully!', 'success');
+                    } else if (data.dates && data.values) {
+                        // Simple mode - create basic plot
+                        const trace = {
+                            x: data.dates,
+                            y: data.values,
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            name: 'Sample Data',
+                            line: {color: 'blue'}
+                        };
+                        const layout = {
+                            title: 'Sample Data',
+                            xaxis: {title: 'Date'},
+                            yaxis: {title: 'Value'},
+                            margin: {t: 40, b: 40, l: 40, r: 40}
+                        };
+                        Plotly.newPlot(graphDiv, [trace], layout, {responsive: true});
+                        showStatus(`Data loaded! ${data.message || 'Simple mode active'}`, 'success');
+                    } else {
+                        console.error('Unexpected data format:', data);
+                        showStatus('Error: Unexpected data format', 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading data:', error);
+                    showStatus('Error loading data: ' + error.message, 'error');
+                });
+        }
+
+        function loadMovementAnalysis() {
+            showStatus('Loading movement analysis...', 'loading');
+            
+            // Placeholder for movement analysis functionality
+            setTimeout(() => {
+                showStatus('Movement analysis feature coming soon!', 'success');
+            }, 1000);
+        }
+
+        // Load sample data on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSampleData();
+        });
+    </script>
+</body>
+</html>
