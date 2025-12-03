@@ -37,25 +37,26 @@ class MovementThresholds:
         MIN_VELOCITY = 0.1  # m/s - minimum peak velocity
     
     class Push:
-        MIN_VELOCITY = 0.2  # m/s - minimum peak velocity for push
-        MIN_FORWARD_LATERAL = 0.05  # m - minimum forward/lateral movement
-        MIN_ELBOW_RANGE = 15  # degrees - minimum elbow extension
-        MIN_DISPLACEMENT = 0.1  # m - minimum overall displacement
+        MIN_VELOCITY = 0.35  # m/s - minimum peak velocity for push (increased from 0.2)
+        MIN_FORWARD_LATERAL = 0.15  # m - minimum forward/lateral movement (increased from 0.05)
+        MIN_ELBOW_RANGE = 25  # degrees - minimum elbow extension (increased from 15)
+        MIN_DISPLACEMENT = 0.2  # m - minimum overall displacement (increased from 0.1)
     
     class Lift:
         MIN_VERTICAL_MOVEMENT = 0.1  # m - minimum upward movement
         MIN_SHOULDER_RANGE = 20  # degrees - minimum shoulder angle range
     
     class Pull:
-        MIN_BACKWARD_MOVEMENT = -0.1  # m - minimum backward movement (negative forward)
-        MIN_ELBOW_RANGE = 25  # degrees - minimum elbow flexion range
-        MIN_VELOCITY = 0.08  # m/s - minimum velocity for pull
+        MIN_BACKWARD_MOVEMENT = -0.05  # m - minimum backward movement (decreased from -0.1)
+        MIN_ELBOW_RANGE = 20  # degrees - minimum elbow flexion range (decreased from 25)
+        MIN_VELOCITY = 0.05  # m/s - minimum velocity for pull (decreased from 0.08)
     
     class Carry:
-        MIN_VELOCITY = 0.05  # m/s - minimum sustained velocity
-        MAX_ELBOW_RANGE = 20  # degrees - maximum elbow range (stable grip)
-        MAX_SHOULDER_RANGE = 15  # degrees - maximum shoulder range (stable position)
-        MIN_HORIZONTAL_MOVEMENT = 0.1  # m - minimum lateral/forward movement
+        MIN_VELOCITY = 0.15  # m/s - minimum sustained velocity
+        MAX_ELBOW_RANGE = 80  # degrees - maximum elbow range (allow arm swing while walking)
+        MAX_SHOULDER_RANGE = 80  # degrees - maximum shoulder range (allow arm swing while walking)
+        MIN_HORIZONTAL_MOVEMENT = 0.2  # m - minimum lateral/forward movement
+        MAX_VELOCITY = 1.0  # m/s - maximum velocity (not forceful pushing)
     
     class Squat:
         MIN_VERTICAL_HIP_MOVEMENT = -0.15  # m - minimum downward hip movement (negative Z)
@@ -79,14 +80,14 @@ class MovementThresholds:
     
     class Twist:
         MIN_SPINE_ROTATION = 15  # degrees - minimum spine rotation angle change
-        MAX_HIP_HORIZONTAL_DISPLACEMENT = 0.15  # m - hips stay relatively stable
-        MIN_SHOULDER_ROTATION_DIFF = 10  # degrees - difference between shoulder rotations
-        MIN_VELOCITY = 0.05  # m/s - minimum movement velocity
+        MAX_HIP_HORIZONTAL_DISPLACEMENT = 0.2  # m - hips stay relatively stable (increased from 0.15)
+        MIN_SHOULDER_ROTATION_DIFF = 5  # degrees - difference between shoulder rotations (lowered from 10)
+        MIN_VELOCITY = 0.03  # m/s - minimum movement velocity (lowered from 0.05)
     
     class Rotate:
-        MIN_SPINE_ROTATION = 20  # degrees - minimum spine rotation angle change
-        MIN_HIP_HORIZONTAL_DISPLACEMENT = 0.2  # m - body turns while moving
-        MIN_VELOCITY = 0.1  # m/s - minimum movement velocity
+        MIN_SPINE_ROTATION = 15  # degrees - minimum spine rotation angle change (lowered from 20)
+        MIN_HIP_HORIZONTAL_DISPLACEMENT = 0.15  # m - body turns while moving (lowered from 0.2)
+        MIN_VELOCITY = 0.05  # m/s - minimum movement velocity (lowered from 0.1)
     
     # Adaptive threshold factors
     VELOCITY_ADAPTIVE_MEAN_FACTOR = 1.0  # factor of mean velocity for adaptive threshold
@@ -331,83 +332,132 @@ class MovementIdentifier:
         if self.data is None:
             raise ValueError("No data loaded. Call load_data() first.")
             
+        print(f"\n{'='*80}")
+        print(f"STARTING BODY MOVEMENT DETECTION (min_duration={min_duration})")
+        print(f"Data shape: {self.data.shape}, Total frames: {len(self.data)}")
+        print(f"{'='*80}")
+            
         try:
+            # Apply low-pass filter to reduce HF noise before velocity calculation
+            from scipy import signal as sig
+            # Butterworth low-pass filter: cutoff at 5 Hz
+            nyquist = 30  # 60 FPS / 2
+            cutoff = 5  # Hz
+            b, a = sig.butter(4, cutoff / nyquist, btype='low')
+            
             # Use CENTER OF MASS (average of both hips) for velocity calculation
             left_hip_coords = self.get_joint_coordinates('hip', 'left')
             right_hip_coords = self.get_joint_coordinates('hip', 'right')
             center_of_mass = (left_hip_coords + right_hip_coords) / 2
             
-            # Calculate velocity based on hip movement
-            hip_velocities = self.calculate_joint_velocities(center_of_mass)
+            # Filter center of mass coordinates
+            filtered_com = np.zeros_like(center_of_mass)
+            for dim in range(3):
+                filtered_com[:, dim] = sig.filtfilt(b, a, center_of_mass[:, dim])
             
-            # Also consider spine movement
+            # Calculate velocity based on filtered hip movement
+            hip_velocities = self.calculate_joint_velocities(filtered_com)
+            
+            # Also consider spine movement with filtering
             upper_spine_coords = self.get_joint_coordinates('upper_spine')
-            spine_velocities = self.calculate_joint_velocities(upper_spine_coords)
+            filtered_spine = np.zeros_like(upper_spine_coords)
+            for dim in range(3):
+                filtered_spine[:, dim] = sig.filtfilt(b, a, upper_spine_coords[:, dim])
+            spine_velocities = self.calculate_joint_velocities(filtered_spine)
             
             # Combined velocity (max of hip or spine movement)
             combined_velocities = np.maximum(hip_velocities, spine_velocities)
             
-            # Smooth velocities to reduce noise
+            # Smooth velocities to reduce noise - larger window for body movements
             from scipy import signal as sig
-            window_size = min(21, len(combined_velocities) // 4)
+            window_size = min(41, len(combined_velocities) // 3)  # Even larger for body
             if window_size >= 3 and window_size % 2 == 0:
                 window_size += 1
             if window_size >= 3:
-                smoothed_velocities = sig.savgol_filter(combined_velocities, window_size, 2)
+                smoothed_velocities = sig.savgol_filter(combined_velocities, window_size, 3)
             else:
                 smoothed_velocities = combined_velocities
             
-            # Use fixed velocity threshold for body movements (lower than arm movements)
-            velocity_threshold = 0.1  # m/s - body movements are typically slower
+            # Adaptive threshold for body movements using percentile
+            velocity_threshold = np.percentile(smoothed_velocities, 50)  # 50th percentile (median) - more sensitive
+            
+            # Body movements are slower but more sustained
+            min_threshold = 0.08  # Minimum 0.08 m/s for body movements
+            velocity_threshold = max(velocity_threshold, min_threshold)
+            
+            print(f"Velocity threshold: {velocity_threshold:.3f} m/s (50th percentile, min 0.08)")
+            print(f"Start threshold: {velocity_threshold:.3f}, End threshold: {velocity_threshold * 0.4:.3f}, Gap tolerance: 40 frames")
             
             # Find movement segments
             segments = []
             in_movement = False
             start_frame = 0
             
+            # Hysteresis thresholds for body movements
+            start_threshold = velocity_threshold
+            end_threshold = velocity_threshold * 0.4  # 40% hysteresis - more lenient
+            gap_tolerance = 40  # Allow 40 frames (0.67s) below threshold - prevent rotation fragmentation
+            frames_below_threshold = 0
+            
             for frame in range(len(smoothed_velocities)):
                 current_velocity = smoothed_velocities[frame]
                 
-                if not in_movement and current_velocity > velocity_threshold:
+                if not in_movement and current_velocity > start_threshold:
                     # Movement start detected
                     start_frame = frame
                     in_movement = True
+                    frames_below_threshold = 0
                     
-                elif in_movement and current_velocity <= velocity_threshold:
-                    # Movement end detected
-                    duration = frame - start_frame
-                    if duration >= min_duration:
+                elif in_movement:
+                    if current_velocity <= end_threshold:
+                        frames_below_threshold += 1
+                    else:
+                        frames_below_threshold = 0
+                    
+                    # End movement after sustained low velocity
+                    if frames_below_threshold >= gap_tolerance:
+                        end_frame = frame - frames_below_threshold
+                        duration = end_frame - start_frame
                         
-                        # Classify body movement for this segment
-                        segment_data = self.data.iloc[start_frame:frame+1].copy()
-                        
-                        try:
-                            movement_type = self._classify_body_movement(segment_data)
+                        if duration >= min_duration:
+                            # Classify body movement for this segment
+                            segment_data = self.data.iloc[start_frame:end_frame+1].copy()
                             
-                            # Only keep if it's actually a body movement
-                            if movement_type in [MovementType.WALK, MovementType.SQUAT, 
-                                                MovementType.LOWER_BACK_BEND, MovementType.TWIST,
-                                                MovementType.ROTATE]:
+                            try:
+                                movement_type = self._classify_body_movement(segment_data)
                                 
-                                # Calculate segment metrics
-                                hip_displacement = np.linalg.norm(center_of_mass[frame] - center_of_mass[start_frame])
-                                max_velocity = np.max(smoothed_velocities[start_frame:frame+1])
-                                
-                                segments.append({
-                                    'start_frame': start_frame,
-                                    'end_frame': frame,
-                                    'duration_frames': duration,
-                                    'duration_seconds': duration / 60.0,
-                                    'movement_type': movement_type.value,
-                                    'wrist_displacement': hip_displacement,  # Using hip displacement for consistency
-                                    'max_velocity': max_velocity,
-                                    'avg_velocity': np.mean(smoothed_velocities[start_frame:frame+1]),
-                                    'is_body_movement': True
-                                })
-                        except Exception as e:
-                            print(f"Error classifying body movement: {e}")
-                    
-                    in_movement = False
+                                # Only keep if it's actually a body movement
+                                if movement_type in [MovementType.WALK, MovementType.SQUAT, 
+                                                    MovementType.LOWER_BACK_BEND, MovementType.TWIST,
+                                                    MovementType.ROTATE]:
+                                    
+                                    # Calculate segment metrics
+                                    hip_displacement = np.linalg.norm(center_of_mass[end_frame] - center_of_mass[start_frame])
+                                    max_velocity = np.max(smoothed_velocities[start_frame:end_frame+1])
+                                    
+                                    segments.append({
+                                        'start_frame': start_frame,
+                                        'end_frame': end_frame,
+                                        'duration_frames': duration,
+                                        'duration_seconds': duration / 60.0,
+                                        'movement_type': movement_type.value,
+                                        'wrist_displacement': hip_displacement,
+                                        'max_velocity': max_velocity,
+                                        'avg_velocity': np.mean(smoothed_velocities[start_frame:end_frame+1]),
+                                        'is_body_movement': True
+                                    })
+                            except Exception as e:
+                                print(f"Error classifying body movement: {e}")
+                        
+                        in_movement = False
+                        frames_below_threshold = 0
+            
+            print(f"\n{'='*80}")
+            print(f"BODY MOVEMENT DETECTION COMPLETE - Total segments: {len(segments)}")
+            print(f"{'='*80}")
+            for i, seg in enumerate(segments):
+                print(f"  Body #{i+1}: frames {seg['start_frame']:4d}-{seg['end_frame']:4d} ({seg['duration_seconds']:5.1f}s) - {seg['movement_type']}")
+            print(f"{'='*80}\n")
             
             return segments
             
@@ -477,33 +527,53 @@ class MovementIdentifier:
             hip_velocities = self.calculate_joint_velocities(avg_hip)
             max_velocity = np.max(hip_velocities) if len(hip_velocities) > 0 else 0
             
-            # TWIST detection (torso rotation while standing - highest priority for rotation)
+            # Debug rotation detection
+            print(f"  Rotation Analysis:")
+            print(f"    Spine rotation range: {spine_rotation_range:.1f}° (TWIST need: {MovementThresholds.Twist.MIN_SPINE_ROTATION}°, ROTATE need: {MovementThresholds.Rotate.MIN_SPINE_ROTATION}°)")
+            print(f"    Hip horizontal displacement: {hip_horizontal_displacement:.3f}m (TWIST max: {MovementThresholds.Twist.MAX_HIP_HORIZONTAL_DISPLACEMENT}m, ROTATE min: {MovementThresholds.Rotate.MIN_HIP_HORIZONTAL_DISPLACEMENT}m)")
+            print(f"    Shoulder rotation diff: {shoulder_rotation_diff:.1f}° (TWIST need: {MovementThresholds.Twist.MIN_SHOULDER_ROTATION_DIFF}°)")
+            print(f"    Max velocity: {max_velocity:.3f}m/s")
+            print(f"    Alternating steps: {alternating_steps}, Left knee range: {left_knee_range:.1f}°, Right knee range: {right_knee_range:.1f}°")
+            
+            # WALK detection (HIGHEST PRIORITY - check first!)
+            # Walking can have spine rotation and hip displacement, so check this before TWIST/ROTATE
+            # - Significant horizontal movement
+            # - Alternating leg pattern (key differentiator from other movements)
+            # - Good knee flexion on both legs
+            # - Moderate velocity
+            if (hip_horizontal_displacement > MovementThresholds.Walk.MIN_HORIZONTAL_DISPLACEMENT and
+                alternating_steps >= MovementThresholds.Walk.MIN_ALTERNATING_STEPS and
+                left_knee_range > MovementThresholds.Walk.MIN_KNEE_FLEXION_RANGE and
+                right_knee_range > MovementThresholds.Walk.MIN_KNEE_FLEXION_RANGE and
+                max_velocity > MovementThresholds.Walk.MIN_VELOCITY):
+                print(f"  -> WALK DETECTED!")
+                return MovementType.WALK
+            
+            # TWIST detection (torso rotation while standing)
             # - Significant spine rotation
             # - Hips stay relatively stable (not walking/moving)
             # - Differential shoulder rotation (torso twist)
             # - Moderate velocity
+            # - NO alternating leg pattern (this is key - if legs alternate, it's walking)
             if (spine_rotation_range > MovementThresholds.Twist.MIN_SPINE_ROTATION and
                 hip_horizontal_displacement < MovementThresholds.Twist.MAX_HIP_HORIZONTAL_DISPLACEMENT and
                 shoulder_rotation_diff > MovementThresholds.Twist.MIN_SHOULDER_ROTATION_DIFF and
+                alternating_steps < 2 and  # Key: no walking pattern
                 max_velocity > MovementThresholds.Twist.MIN_VELOCITY):
+                print(f"  -> TWIST DETECTED!")
                 return MovementType.TWIST
             
             # ROTATE detection (full body rotation with movement)
             # - Significant spine rotation
             # - Body is moving horizontally
             # - Moderate velocity
+            # - NO alternating leg pattern (if legs alternate, it's walking)
             if (spine_rotation_range > MovementThresholds.Rotate.MIN_SPINE_ROTATION and
                 hip_horizontal_displacement > MovementThresholds.Rotate.MIN_HIP_HORIZONTAL_DISPLACEMENT and
+                alternating_steps < 2 and  # Key: no walking pattern
                 max_velocity > MovementThresholds.Rotate.MIN_VELOCITY):
+                print(f"  -> ROTATE DETECTED!")
                 return MovementType.ROTATE
-            
-            # WALK detection (highest priority for body movements)
-            if (hip_horizontal_displacement > MovementThresholds.Walk.MIN_HORIZONTAL_DISPLACEMENT and
-                alternating_steps >= MovementThresholds.Walk.MIN_ALTERNATING_STEPS and
-                left_knee_range > MovementThresholds.Walk.MIN_KNEE_FLEXION_RANGE and
-                right_knee_range > MovementThresholds.Walk.MIN_KNEE_FLEXION_RANGE and
-                max_velocity > MovementThresholds.Walk.MIN_VELOCITY):
-                return MovementType.WALK
             
             # SQUAT detection
             if (hip_vertical_movement < MovementThresholds.Squat.MIN_VERTICAL_HIP_MOVEMENT and
@@ -550,9 +620,38 @@ class MovementIdentifier:
             
             body_segments = self._cached_body_segments
             
-            # Step 3: Merge segments chronologically
-            if body_segments is not None:
-                all_segments = arm_segments + body_segments
+            # Step 3: Merge segments chronologically and remove overlaps
+            if body_segments is not None and len(body_segments) > 0:
+                # Filter out arm segments that significantly overlap with body movements
+                # Body movements (WALK, SQUAT, etc.) take priority
+                filtered_arm_segments = []
+                for arm_seg in arm_segments:
+                    arm_start = arm_seg['start_frame']
+                    arm_end = arm_seg['end_frame']
+                    
+                    # Check if this arm segment overlaps significantly with any body segment
+                    overlaps_significantly = False
+                    for body_seg in body_segments:
+                        body_start = body_seg['start_frame']
+                        body_end = body_seg['end_frame']
+                        
+                        # Calculate overlap
+                        overlap_start = max(arm_start, body_start)
+                        overlap_end = min(arm_end, body_end)
+                        
+                        if overlap_start < overlap_end:
+                            overlap_duration = overlap_end - overlap_start
+                            arm_duration = arm_end - arm_start
+                            
+                            # If more than 50% of arm segment overlaps with body movement, skip it
+                            if overlap_duration > arm_duration * 0.5:
+                                overlaps_significantly = True
+                                break
+                    
+                    if not overlaps_significantly:
+                        filtered_arm_segments.append(arm_seg)
+                
+                all_segments = filtered_arm_segments + body_segments
             else:
                 all_segments = arm_segments
             all_segments.sort(key=lambda x: x['start_frame'])
@@ -575,86 +674,120 @@ class MovementIdentifier:
             List of arm movement segments
         """
         try:
-            # Get wrist coordinates and calculate velocity
+            # Get wrist coordinates and filter to reduce HF noise
             wrist_coords = self.get_joint_coordinates('wrist', side)
-            velocities = self.calculate_joint_velocities(wrist_coords)
             
-            # Smooth velocities to reduce noise
+            # Apply low-pass filter to coordinates before velocity calculation
             from scipy import signal as sig
-            window_size = min(21, len(velocities) // 4)
+            # Butterworth low-pass filter: cutoff at 5 Hz (reasonable for human movement)
+            nyquist = 30  # 60 FPS / 2
+            cutoff = 5  # Hz
+            b, a = sig.butter(4, cutoff / nyquist, btype='low')
+            
+            # Filter each coordinate dimension
+            filtered_coords = np.zeros_like(wrist_coords)
+            for dim in range(3):
+                filtered_coords[:, dim] = sig.filtfilt(b, a, wrist_coords[:, dim])
+            
+            velocities = self.calculate_joint_velocities(filtered_coords)
+            
+            # Smooth velocities to reduce noise - use larger window for better continuity
+            from scipy import signal as sig
+            window_size = min(31, len(velocities) // 3)  # Larger window
             if window_size >= 3 and window_size % 2 == 0:
                 window_size += 1
             if window_size >= 3:
-                smoothed_velocities = sig.savgol_filter(velocities, window_size, 2)
+                smoothed_velocities = sig.savgol_filter(velocities, window_size, 3)  # Higher order polynomial
             else:
                 smoothed_velocities = velocities
             
-            # Define movement threshold (adaptive based on data)
-            velocity_threshold = np.mean(smoothed_velocities) + 0.5 * np.std(smoothed_velocities)
+            # Adaptive threshold using percentile (more robust than mean+std)
+            # Use 75th percentile to capture significant movements only
+            velocity_threshold = np.percentile(smoothed_velocities, 75)
             
-            # Find movement segments
+            # Set minimum threshold to avoid micro-movements
+            min_threshold = 0.15  # Minimum 0.15 m/s for arm movements
+            velocity_threshold = max(velocity_threshold, min_threshold)
+            
+            # Find movement segments with hysteresis and gap tolerance
             segments = []
             in_movement = False
             start_frame = 0
+            frames_below_threshold = 0
+            
+            # Hysteresis: higher threshold to start, lower to end
+            start_threshold = velocity_threshold
+            end_threshold = velocity_threshold * 0.6  # 60% of start threshold
+            max_gap_frames = 15  # Allow 0.25s gaps (at 60fps) to merge movements
             
             for frame in range(len(smoothed_velocities)):
                 current_velocity = smoothed_velocities[frame]
                 
-                if not in_movement and current_velocity > velocity_threshold:
+                if not in_movement and current_velocity > start_threshold:
                     # Movement start detected
                     start_frame = frame
                     in_movement = True
+                    frames_below_threshold = 0
                     
-                elif in_movement and current_velocity <= velocity_threshold:
-                    # Movement end detected
-                    duration = frame - start_frame
-                    if duration >= min_duration:  # Only include significant movements
+                elif in_movement:
+                    if current_velocity <= end_threshold:
+                        frames_below_threshold += 1
+                    else:
+                        frames_below_threshold = 0  # Reset if velocity goes back up
+                    
+                    # Only end movement after sustained low velocity
+                    if frames_below_threshold >= max_gap_frames:
+                        # Movement end detected
+                        end_frame = frame - frames_below_threshold
+                        duration = end_frame - start_frame
                         
-                        # Classify the movement type for this segment
-                        segment_data = self.data.iloc[start_frame:frame+1].copy()
-                        original_data = self.data
-                        self.data = segment_data
-                        
-                        try:
-                            movement_type = self.classify_movement_type(side, arm_only=True)
+                        if duration >= min_duration:  # Only include significant movements
+                            # Classify the movement type for this segment
+                            segment_data = self.data.iloc[start_frame:end_frame+1].copy()
+                            original_data = self.data
+                            self.data = segment_data
                             
-                            # Only keep arm movements (filter out body movements)
-                            if movement_type.value in ['reach', 'push', 'pull', 'lift', 'carry', 'unknown']:
-                                # Calculate segment metrics
-                                wrist_displacement = np.linalg.norm(wrist_coords[frame] - wrist_coords[start_frame])
-                                max_velocity = np.max(smoothed_velocities[start_frame:frame+1])
+                            try:
+                                movement_type = self.classify_movement_type(side, arm_only=True)
                                 
+                                # Only keep arm movements (filter out body movements)
+                                if movement_type.value in ['reach', 'push', 'pull', 'lift', 'carry', 'unknown']:
+                                    # Calculate segment metrics
+                                    wrist_displacement = np.linalg.norm(wrist_coords[end_frame] - wrist_coords[start_frame])
+                                    max_velocity = np.max(smoothed_velocities[start_frame:end_frame+1])
+                                    
+                                    segments.append({
+                                        'start_frame': start_frame,
+                                        'end_frame': end_frame,
+                                        'duration_frames': duration,
+                                        'duration_seconds': duration / 60.0,  # Assuming 60 FPS
+                                        'movement_type': movement_type.value,
+                                        'wrist_displacement': wrist_displacement,
+                                        'max_velocity': max_velocity,
+                                        'avg_velocity': np.mean(smoothed_velocities[start_frame:end_frame+1]),
+                                        'is_body_movement': False
+                                    })
+                            except Exception as e:
+                                # If classification fails, mark as unknown
+                                wrist_displacement = np.linalg.norm(wrist_coords[end_frame] - wrist_coords[start_frame])
+                                max_velocity = np.max(smoothed_velocities[start_frame:end_frame+1])
                                 segments.append({
                                     'start_frame': start_frame,
-                                    'end_frame': frame,
+                                    'end_frame': end_frame,
                                     'duration_frames': duration,
-                                    'duration_seconds': duration / 60.0,  # Assuming 60 FPS
-                                    'movement_type': movement_type.value,
+                                    'duration_seconds': duration / 60.0,
+                                    'movement_type': 'unknown',
                                     'wrist_displacement': wrist_displacement,
                                     'max_velocity': max_velocity,
-                                    'avg_velocity': np.mean(smoothed_velocities[start_frame:frame+1]),
+                                    'avg_velocity': np.mean(smoothed_velocities[start_frame:end_frame+1]),
                                     'is_body_movement': False
                                 })
-                        except Exception as e:
-                            # If classification fails, mark as unknown
-                            wrist_displacement = np.linalg.norm(wrist_coords[frame] - wrist_coords[start_frame])
-                            max_velocity = np.max(smoothed_velocities[start_frame:frame+1])
-                            segments.append({
-                                'start_frame': start_frame,
-                                'end_frame': frame,
-                                'duration_frames': duration,
-                                'duration_seconds': duration / 60.0,
-                                'movement_type': 'unknown',
-                                'wrist_displacement': wrist_displacement,
-                                'max_velocity': max_velocity,
-                                'avg_velocity': np.mean(smoothed_velocities[start_frame:frame+1]),
-                                'is_body_movement': False
-                            })
-                        finally:
-                            # Restore original data
-                            self.data = original_data
-                    
-                    in_movement = False
+                            finally:
+                                # Restore original data
+                                self.data = original_data
+                        
+                        in_movement = False
+                        frames_below_threshold = 0
             
             return segments
             
@@ -865,30 +998,17 @@ class MovementIdentifier:
                     return MovementType.LOWER_BACK_BEND
             
             # ARM MOVEMENTS (always check these)
-            # REACH movement criteria:
-            # - Significant wrist displacement (> threshold)
-            # - Moderate elbow extension (angle range > threshold)
-            # - Primary forward movement component
-            # - Moderate peak velocity
-            if (wrist_displacement > MovementThresholds.Reach.MIN_DISPLACEMENT and 
-                elbow_angle_range > MovementThresholds.Reach.MIN_ELBOW_RANGE and
-                forward_movement > max(vertical_movement, lateral_movement) and
-                max_velocity > MovementThresholds.Reach.MIN_VELOCITY):
-                return MovementType.REACH
-                
-            # PUSH movement criteria:
-            # - Moderate to high velocity peak
-            # - Any forward or lateral movement
-            # - Elbow extension pattern
-            # - Moderate displacement
-            elif (max_velocity > MovementThresholds.Push.MIN_VELOCITY and
-                  (forward_movement > MovementThresholds.Push.MIN_FORWARD_LATERAL or 
-                   lateral_movement > MovementThresholds.Push.MIN_FORWARD_LATERAL) and
-                  elbow_angle_range > MovementThresholds.Push.MIN_ELBOW_RANGE and
-                  wrist_displacement > MovementThresholds.Push.MIN_DISPLACEMENT):
-                return MovementType.PUSH
-                
-            # LIFT movement criteria:
+            # Check PULL first - most specific pattern (backward movement)
+            # PULL movement criteria: 
+            # - Negative forward movement (towards body)
+            # - Elbow flexion pattern
+            # - Moderate velocity
+            if (forward_movement < MovementThresholds.Pull.MIN_BACKWARD_MOVEMENT and
+                elbow_angle_range > MovementThresholds.Pull.MIN_ELBOW_RANGE and
+                max_velocity > MovementThresholds.Pull.MIN_VELOCITY):
+                return MovementType.PULL
+            
+            # LIFT movement criteria (check before REACH to catch vertical movements):
             # - Primary vertical movement component
             # - Moderate displacement
             # - Shoulder flexion pattern
@@ -896,25 +1016,44 @@ class MovementIdentifier:
                   vertical_movement > MovementThresholds.Lift.MIN_VERTICAL_MOVEMENT and
                   shoulder_angle_range > MovementThresholds.Lift.MIN_SHOULDER_RANGE):
                 return MovementType.LIFT
-                
-            # PULL movement criteria: 
-            # - Negative forward movement (towards body)
-            # - Elbow flexion pattern
-            # - Moderate velocity
-            elif (forward_movement < MovementThresholds.Pull.MIN_BACKWARD_MOVEMENT and
-                  elbow_angle_range > MovementThresholds.Pull.MIN_ELBOW_RANGE and
-                  max_velocity > MovementThresholds.Pull.MIN_VELOCITY):
-                return MovementType.PULL
-                
-            # CARRY movement criteria:
-            # - Sustained moderate velocity
-            # - Limited angle changes (stable grip)
-            # - Continuous lateral or forward movement
+            
+            # REACH movement criteria:
+            # - Significant wrist displacement (> threshold)
+            # - Moderate elbow extension (angle range > threshold)
+            # - Primary forward OR upward movement (reaching forward OR up to shelf)
+            # - Moderate peak velocity
+            # - Not pulling (forward movement should be positive or neutral)
+            elif (wrist_displacement > MovementThresholds.Reach.MIN_DISPLACEMENT and 
+                  elbow_angle_range > MovementThresholds.Reach.MIN_ELBOW_RANGE and
+                  (forward_movement > max(abs(vertical_movement), lateral_movement) or 
+                   vertical_movement > max(forward_movement, lateral_movement)) and
+                  forward_movement > -0.1 and  # Not pulling backward
+                  max_velocity > MovementThresholds.Reach.MIN_VELOCITY):
+                return MovementType.REACH
+            
+            # CARRY movement criteria (check before PUSH to catch carrying while walking):
+            # - Sustained moderate velocity (not too fast)
+            # - Moderate angle changes (natural arm swing)
+            # - Continuous horizontal movement
+            # - Not forceful (velocity cap)
             elif (max_velocity > MovementThresholds.Carry.MIN_VELOCITY and
+                  max_velocity < MovementThresholds.Carry.MAX_VELOCITY and
                   elbow_angle_range < MovementThresholds.Carry.MAX_ELBOW_RANGE and
                   shoulder_angle_range < MovementThresholds.Carry.MAX_SHOULDER_RANGE and
                   max(forward_movement, lateral_movement) > MovementThresholds.Carry.MIN_HORIZONTAL_MOVEMENT):
                 return MovementType.CARRY
+                
+            # PUSH movement criteria (check last among directional movements):
+            # - High velocity peak (forceful movement)
+            # - Forward or lateral movement with significant distance
+            # - Elbow extension pattern
+            # - Significant displacement
+            elif (max_velocity > MovementThresholds.Push.MIN_VELOCITY and
+                  (forward_movement > MovementThresholds.Push.MIN_FORWARD_LATERAL or 
+                   lateral_movement > MovementThresholds.Push.MIN_FORWARD_LATERAL) and
+                  elbow_angle_range > MovementThresholds.Push.MIN_ELBOW_RANGE and
+                  wrist_displacement > MovementThresholds.Push.MIN_DISPLACEMENT):
+                return MovementType.PUSH
                 
             else:
                 return MovementType.UNKNOWN
@@ -997,17 +1136,25 @@ class MovementIdentifier:
             from scipy.signal import find_peaks
             
             # Find peaks (maximum flexion) in both legs
-            # Peaks indicate the swing phase of walking
-            peaks_left, _ = find_peaks(knee_angles, height=np.mean(knee_angles), distance=5)
-            peaks_right, _ = find_peaks(opposite_knee_angles, height=np.mean(opposite_knee_angles), distance=5)
+            # Use lower threshold: 25th percentile instead of mean for more sensitivity
+            left_threshold = np.percentile(knee_angles, 25) if len(knee_angles) > 0 else 0
+            right_threshold = np.percentile(opposite_knee_angles, 25) if len(opposite_knee_angles) > 0 else 0
+            
+            peaks_left, _ = find_peaks(knee_angles, height=left_threshold, distance=10)
+            peaks_right, _ = find_peaks(opposite_knee_angles, height=right_threshold, distance=10)
             
             if len(peaks_left) == 0 or len(peaks_right) == 0:
+                # Fallback: if no peaks found, check if there's any variation
+                left_range = np.max(knee_angles) - np.min(knee_angles)
+                right_range = np.max(opposite_knee_angles) - np.min(opposite_knee_angles)
+                # If both legs show significant flexion range, assume at least some walking
+                if left_range > 15 and right_range > 15:
+                    return 2  # Minimum alternating steps
                 return 0
             
             # Count alternating patterns where legs move out of phase
-            # In walking, when one leg is in swing phase (flexed), the other is in stance phase
             alternating_count = 0
-            fps = 60  # Assuming 60 FPS
+            fps = 60
             
             # Check if peaks are alternating (not synchronized)
             all_peaks = sorted(list(peaks_left) + list(peaks_right))
@@ -1015,16 +1162,18 @@ class MovementIdentifier:
             for i in range(len(all_peaks) - 1):
                 time_diff = (all_peaks[i + 1] - all_peaks[i]) / fps
                 
-                # Check if time between peaks is within walking cadence range
-                if (MovementThresholds.Walk.MIN_LEG_CYCLE_DURATION <= time_diff <= 
-                    MovementThresholds.Walk.MAX_LEG_CYCLE_DURATION):
-                    
+                # Relaxed cadence range for walking detection
+                if 0.3 <= time_diff <= 2.5:  # More permissive than original
                     # Check if consecutive peaks are from different legs (alternating)
                     peak1_is_left = all_peaks[i] in peaks_left
                     peak2_is_left = all_peaks[i + 1] in peaks_left
                     
                     if peak1_is_left != peak2_is_left:
                         alternating_count += 1
+            
+            # If we found many peaks but few alternations, still give credit for variation
+            if alternating_count == 0 and len(peaks_left) > 1 and len(peaks_right) > 1:
+                return 2  # Assume walking if both legs have multiple peaks
             
             return alternating_count
             
